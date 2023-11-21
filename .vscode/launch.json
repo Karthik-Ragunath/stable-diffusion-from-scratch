@@ -1,0 +1,37 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "generate",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/stable_diffusion_pytorch/pipeline.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--prompts", "a photograph of an astronaut riding a horse",
+            ],
+            "env": {
+                "PYTHONPATH": "$PYTHONPATH:/home/kxa200005/github/stable-diffusion-from-scratch"
+            }
+        },
+        {
+            "name": "generate:image_to_image",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/stable_diffusion_pytorch/pipeline.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--prompts", "young boy playing cricket in backdrop of a mountain",
+                "--image_paths", "data/Uttarkhand.jpeg"
+            ],
+            "env": {
+                "PYTHONPATH": "$PYTHONPATH:/home/kxa200005/github/stable-diffusion-from-scratch"
+            }
+        },
+    ]
+}

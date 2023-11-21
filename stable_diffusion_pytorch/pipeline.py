@@ -2,11 +2,23 @@ import torch
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-from . import Tokenizer
-from . import KLMSSampler, KEulerSampler, KEulerAncestralSampler
-from . import util
-from . import model_loader
+from stable_diffusion_pytorch.tokenizer import Tokenizer
+from stable_diffusion_pytorch.samplers import KEulerAncestralSampler, KLMSSampler, KEulerSampler
+# from stable_diffusion_pytorch.samplers.k_euler_ancestral import KEulerAncestralSampler
+# from stable_diffusion_pytorch.samplers.k_lms import KLMSSampler
+# from stable_diffusion_pytorch.samplers.k_euler import KEulerSampler
+from stable_diffusion_pytorch import util
+from stable_diffusion_pytorch import model_loader
+import argparse
+import os
 
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompts", nargs="+", required=True)
+    parser.add_argument("--uncond_prompts", nargs="+", required=False, default=[])
+    parser.add_argument("--image_paths", nargs="+", required=False, default=[])
+    args = parser.parse_args()
+    return args
 
 def generate(
         prompts,
@@ -110,11 +122,11 @@ def generate(
         if do_cfg:
             cond_tokens = tokenizer.encode_batch(prompts)
             cond_tokens = torch.tensor(cond_tokens, dtype=torch.long, device=device)
-            cond_context = clip(cond_tokens)
+            cond_context = clip(cond_tokens) # torch.Size([1, 77, 768])
             uncond_tokens = tokenizer.encode_batch(uncond_prompts)
             uncond_tokens = torch.tensor(uncond_tokens, dtype=torch.long, device=device)
-            uncond_context = clip(uncond_tokens)
-            context = torch.cat([cond_context, uncond_context])
+            uncond_context = clip(uncond_tokens) # torch.Size([1, 77, 768])
+            context = torch.cat([cond_context, uncond_context]) # torch.Size([2, 77, 768])
         else:
             tokens = tokenizer.encode_batch(prompts)
             tokens = torch.tensor(tokens, dtype=torch.long, device=device)
@@ -136,7 +148,7 @@ def generate(
                 % sampler
             )
 
-        noise_shape = (len(prompts), 4, height // 8, width // 8)
+        noise_shape = (len(prompts), 4, height // 8, width // 8) # (1, 4, 64, 64)
 
         if input_images:
             encoder = models.get('encoder') or model_loader.load_encoder(device)
@@ -149,25 +161,25 @@ def generate(
                 input_image = input_image.resize((width, height))
                 input_image = np.array(input_image)
                 input_image = torch.tensor(input_image, dtype=torch.float32)
-                input_image = util.rescale(input_image, (0, 255), (-1, 1))
+                input_image = util.rescale(input_image, (0, 255), (-1, 1)) # torch.Size([512, 512, 3])
                 processed_input_images.append(input_image)
             input_images_tensor = torch.stack(processed_input_images).to(device)
-            input_images_tensor = util.move_channel(input_images_tensor, to="first")
+            input_images_tensor = util.move_channel(input_images_tensor, to="first") # torch.Size([1, 512, 512, 3])
 
-            _, _, height, width = input_images_tensor.shape
-            noise_shape = (len(prompts), 4, height // 8, width // 8)
+            _, _, height, width = input_images_tensor.shape # 512, 512
+            noise_shape = (len(prompts), 4, height // 8, width // 8) # (1, 4, 64, 64)
 
-            encoder_noise = torch.randn(noise_shape, generator=generator, device=device)
-            latents = encoder(input_images_tensor, encoder_noise)
+            encoder_noise = torch.randn(noise_shape, generator=generator, device=device) # torch.Size([1, 4, 64, 64])
+            latents = encoder(input_images_tensor, encoder_noise) # torch.Size([1, 4, 64, 64])
 
-            latents_noise = torch.randn(noise_shape, generator=generator, device=device)
-            sampler.set_strength(strength=strength)
-            latents += latents_noise * sampler.initial_scale
+            latents_noise = torch.randn(noise_shape, generator=generator, device=device) # torch.Size([1, 4, 64, 64])
+            sampler.set_strength(strength=strength) # strength = 0.8
+            latents += latents_noise * sampler.initial_scale # torch.Size([1, 4, 64, 64]), sampler.initial_scale - 4.998855896419922 # latents_noise * sampler.initial_scale - (-0.9 to 5) # latents -> -2 to 2
 
             to_idle(encoder)
             del encoder, processed_input_images, input_images_tensor, latents_noise
         else:
-            latents = torch.randn(noise_shape, generator=generator, device=device)
+            latents = torch.randn(noise_shape, generator=generator, device=device) # torch.Size([1, 4, 64, 64])
             latents *= sampler.initial_scale
 
         diffusion = models.get('diffusion') or model_loader.load_diffusion(device)
@@ -175,30 +187,43 @@ def generate(
 
         timesteps = tqdm(sampler.timesteps)
         for i, timestep in enumerate(timesteps):
-            time_embedding = util.get_time_embedding(timestep).to(device)
+            time_embedding = util.get_time_embedding(timestep).to(device) # 999.0 - torch.Size([1, 320])
 
-            input_latents = latents * sampler.get_input_scale()
+            input_latents = latents * sampler.get_input_scale() # torch.Size([1, 4, 64, 64])
             if do_cfg:
-                input_latents = input_latents.repeat(2, 1, 1, 1)
+                input_latents = input_latents.repeat(2, 1, 1, 1) # torch.Size([2, 4, 64, 64])
 
-            output = diffusion(input_latents, context, time_embedding)
+            output = diffusion(input_latents, context, time_embedding) # torch.Size([2, 4, 64, 64]), input_latents - torch.Size([2, 4, 64, 64]), context - torch.Size([2, 77, 768]), time_embedding - torch.Size([1, 320])
             if do_cfg:
-                output_cond, output_uncond = output.chunk(2)
-                output = cfg_scale * (output_cond - output_uncond) + output_uncond
+                output_cond, output_uncond = output.chunk(2) # torch.Size([1, 4, 64, 64]), torch.Size([1, 4, 64, 64])
+                output = cfg_scale * (output_cond - output_uncond) + output_uncond # torch.Size([1, 4, 64, 64]), cfg_scale = 7.5
 
-            latents = sampler.step(latents, output)
+            latents = sampler.step(latents, output) # torch.Size([1, 4, 64, 64])
 
         to_idle(diffusion)
         del diffusion
 
         decoder = models.get('decoder') or model_loader.load_decoder(device)
         decoder.to(device)
-        images = decoder(latents)
+        images = decoder(latents) # torch.Size([1, 3, 512, 512]), latents - torch.Size([1, 4, 64, 64])
         to_idle(decoder)
         del decoder
 
         images = util.rescale(images, (-1, 1), (0, 255), clamp=True)
-        images = util.move_channel(images, to="last")
-        images = images.to('cpu', torch.uint8).numpy()
+        images = util.move_channel(images, to="last") # torch.Size([1, 512, 512, 3])
+        images = images.to('cpu', torch.uint8).numpy() 
 
         return [Image.fromarray(image) for image in images]
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    input_images = []
+    for image_path in args.image_paths:
+        input_images.append(Image.open(image_path))
+    if not input_images:
+        images = generate(prompts=args.prompts, uncond_prompts=args.uncond_prompts)
+    else:
+        images = generate(prompts=args.prompts, uncond_prompts=args.uncond_prompts, input_images=input_images)
+    os.makedirs("results", exist_ok=True)
+    for index, image in enumerate(images):
+        image.save(os.path.join("results", f"image_{index}.png"), format="PNG")
